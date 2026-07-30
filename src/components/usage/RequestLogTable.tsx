@@ -9,6 +9,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -213,25 +214,37 @@ export function RequestLogTable({
                           {log.providerName || t("usage.unknownProvider")}
                         </TableCell>
                         <TableCell className="text-center font-mono text-xs max-w-[200px]">
-                          <div
-                            className="truncate"
-                            title={
-                              log.requestModel && log.requestModel !== log.model
-                                ? `${log.requestModel} → ${log.model}`
-                                : log.model
-                            }
-                          >
-                            {log.requestModel &&
-                            log.requestModel !== log.model ? (
-                              <span>
-                                {log.requestModel}
-                                <span className="text-muted-foreground">
-                                  {" → "}
-                                  {log.model}
+                          <div className="flex min-w-0 items-center justify-center gap-1">
+                            <div
+                              className="min-w-0 truncate"
+                              title={
+                                log.requestModel &&
+                                log.requestModel !== log.model
+                                  ? `${log.requestModel} → ${log.model}`
+                                  : log.model
+                              }
+                            >
+                              {log.requestModel &&
+                              log.requestModel !== log.model ? (
+                                <span>
+                                  {log.requestModel}
+                                  <span className="text-muted-foreground">
+                                    {" → "}
+                                    {log.model}
+                                  </span>
                                 </span>
-                              </span>
-                            ) : (
-                              log.model
+                              ) : (
+                                log.model
+                              )}
+                            </div>
+                            {log.reasoningEffort && (
+                              <Badge
+                                variant="secondary"
+                                className="h-5 shrink-0 px-1.5 font-mono text-[10px] uppercase"
+                                title={t("usage.reasoningEffort")}
+                              >
+                                {log.reasoningEffort}
+                              </Badge>
                             )}
                           </div>
                         </TableCell>

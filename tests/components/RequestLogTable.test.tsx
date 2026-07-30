@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RequestLogTable } from "@/components/usage/RequestLogTable";
-import type { UsageRangeSelection } from "@/types/usage";
+import type { RequestLog, UsageRangeSelection } from "@/types/usage";
 
 const useRequestLogsMock = vi.hoisted(() => vi.fn());
 
@@ -157,5 +157,48 @@ describe("RequestLogTable", () => {
         }),
       );
     });
+  });
+
+  it("shows the reasoning effort sent upstream after the billing model", () => {
+    const log: RequestLog = {
+      requestId: "request-with-effort",
+      providerId: "openai",
+      providerName: "OpenAI",
+      appType: "claude",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+      costMultiplier: "1",
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      inputCostUsd: "0.001",
+      outputCostUsd: "0.001",
+      cacheReadCostUsd: "0",
+      cacheCreationCostUsd: "0",
+      totalCostUsd: "0.002",
+      isStreaming: true,
+      latencyMs: 1000,
+      statusCode: 200,
+      createdAt: 1_700_000_000,
+    };
+    useRequestLogsMock.mockReturnValue({
+      data: { data: [log], total: 1, page: 0, pageSize: 20 },
+      isLoading: false,
+    });
+
+    render(
+      <RequestLogTable
+        range={{ preset: "today" }}
+        rangeLabel="Today"
+        appType="all"
+        refreshIntervalMs={0}
+      />,
+    );
+
+    expect(screen.getByText("gpt-5.6-sol")).toBeInTheDocument();
+    expect(screen.getByTitle("usage.reasoningEffort")).toHaveTextContent(
+      "xhigh",
+    );
   });
 });

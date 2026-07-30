@@ -53,6 +53,8 @@ pub struct RequestContext {
     /// usage 归因的兜底顺序：上游响应回显 → outbound_model → request_model。
     /// 不能直接用 request_model 兜底：接管场景下它是映射前的客户端别名。
     pub outbound_model: Option<String>,
+    /// 最终请求体中实际发往上游的命名思考强度。
+    pub outbound_reasoning_effort: Option<String>,
     /// 日志标签（如 "Claude"、"Codex"、"Gemini"）
     pub tag: &'static str,
     /// 应用类型字符串（如 "claude"、"codex"、"gemini"）
@@ -165,6 +167,7 @@ impl RequestContext {
             current_provider_id,
             request_model,
             outbound_model: None,
+            outbound_reasoning_effort: None,
             tag,
             app_type_str,
             app_type,

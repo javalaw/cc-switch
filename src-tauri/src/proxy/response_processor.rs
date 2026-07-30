@@ -489,6 +489,7 @@ pub(crate) fn create_usage_collector(
     let stream_parser = parser_config.stream_parser;
     let model_extractor = parser_config.model_extractor;
     let session_id = ctx.session_id.clone();
+    let reasoning_effort = ctx.outbound_reasoning_effort.clone();
 
     Some(SseUsageCollector::new(
         start_time,
@@ -503,6 +504,7 @@ pub(crate) fn create_usage_collector(
                 let session_id = session_id.clone();
                 let request_model = request_model.clone();
                 let outbound_model = fallback_model.clone();
+                let outbound_reasoning_effort = reasoning_effort.clone();
 
                 tokio::spawn(async move {
                     log_usage_internal(
@@ -512,6 +514,7 @@ pub(crate) fn create_usage_collector(
                         &model,
                         &request_model,
                         &outbound_model,
+                        outbound_reasoning_effort,
                         usage,
                         latency_ms,
                         first_token_ms,
@@ -529,6 +532,7 @@ pub(crate) fn create_usage_collector(
                 let session_id = session_id.clone();
                 let request_model = request_model.clone();
                 let outbound_model = fallback_model.clone();
+                let outbound_reasoning_effort = reasoning_effort.clone();
 
                 tokio::spawn(async move {
                     log_usage_internal(
@@ -538,6 +542,7 @@ pub(crate) fn create_usage_collector(
                         &model,
                         &request_model,
                         &outbound_model,
+                        outbound_reasoning_effort,
                         TokenUsage::default(),
                         latency_ms,
                         first_token_ms,
@@ -580,6 +585,7 @@ fn spawn_log_usage(
         .outbound_model
         .clone()
         .unwrap_or_else(|| ctx.request_model.clone());
+    let reasoning_effort = ctx.outbound_reasoning_effort.clone();
     let latency_ms = ctx.latency_ms();
     let session_id = ctx.session_id.clone();
 
@@ -591,6 +597,7 @@ fn spawn_log_usage(
             &model,
             &request_model,
             &outbound_model,
+            reasoning_effort,
             usage,
             latency_ms,
             None,
@@ -624,6 +631,7 @@ async fn log_usage_internal(
     model: &str,
     request_model: &str,
     outbound_model: &str,
+    reasoning_effort: Option<String>,
     usage: TokenUsage,
     latency_ms: u64,
     first_token_ms: Option<u64>,
@@ -661,6 +669,7 @@ async fn log_usage_internal(
         model.to_string(),
         request_model.to_string(),
         pricing_model.to_string(),
+        reasoning_effort,
         usage,
         multiplier,
         latency_ms,
@@ -1072,6 +1081,7 @@ mod tests {
             "resp-model",
             "req-model",
             "req-model",
+            None,
             usage,
             10,
             None,
@@ -1142,6 +1152,7 @@ mod tests {
             "resp-model",
             "req-model",
             "outbound-model",
+            None,
             usage,
             10,
             None,
@@ -1222,6 +1233,7 @@ mod tests {
             "resp-model",
             "req-model",
             "req-model",
+            None,
             usage,
             10,
             None,

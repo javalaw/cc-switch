@@ -1482,6 +1482,7 @@
     "time": "Time",
     "provider": "Provider",
     "billingModel": "Billing Model",
+    "reasoningEffort": "Reasoning effort sent upstream",
     "inputTokens": "Input",
     "outputTokens": "Output",
     "cacheReadTokens": "Cache Hit",

@@ -1453,6 +1453,7 @@
     "time": "時間",
     "provider": "供應商",
     "billingModel": "計費模型",
+    "reasoningEffort": "實際送往上游的思考強度",
     "inputTokens": "輸入",
     "outputTokens": "輸出",
     "cacheReadTokens": "快取命中",

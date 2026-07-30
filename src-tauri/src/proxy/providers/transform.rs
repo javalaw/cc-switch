@@ -61,66 +61,164 @@ pub fn is_openai_o_series(model: &str) -> bool {
         && model.as_bytes().get(1).is_some_and(|b| b.is_ascii_digit())
 }
 
-/// Detect Responses-compatible models that support reasoning effort.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+}
+
+impl ReasoningEffort {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
+            "max" => Some(Self::Max),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+/// Return the highest reasoning effort accepted by a known target model.
 ///
-/// Supported families:
-/// - o-series: o1, o3, o4-mini, etc.
-/// - GPT-5+: gpt-5, gpt-5.1, gpt-5.4, gpt-5-codex, etc.
-/// - xAI Grok Build models. `grok-4.5` is the current documented Grok Build
-///   model; retain the previous `grok-build-*` family for saved providers.
-pub fn supports_reasoning_effort(model: &str) -> bool {
-    let normalized = model.to_lowercase();
-    is_openai_o_series(&normalized)
-        || normalized
-            .strip_prefix("gpt-")
-            .and_then(|rest| rest.chars().next())
-            .is_some_and(|c| c.is_ascii_digit() && c >= '5')
-        || normalized == "grok-4.5"
+/// This is deliberately a local, conservative capability snapshot. OpenAI's
+/// `/v1/models` response does not expose effort capabilities, so relying on a
+/// live model-list request cannot answer this question. Keep unknown models at
+/// `None` rather than injecting a parameter that may make the upstream reject
+/// the whole request.
+fn max_reasoning_effort(model: &str) -> Option<ReasoningEffort> {
+    // Gateways commonly qualify ids as `openai/gpt-5.6`; capability matching
+    // belongs to the actual model id, not the provider prefix.
+    let normalized = model
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if is_openai_o_series(&normalized) {
+        return Some(ReasoningEffort::High);
+    }
+
+    let is_gpt_5_or_newer = normalized
+        .strip_prefix("gpt-")
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 5);
+    if is_gpt_5_or_newer {
+        // LiteLLM's public capability map identifies xhigh support for these
+        // OpenAI families. GPT-5/5.1 and current GPT-5.3 chat/codex models top
+        // out at high. No OpenAI model currently declares max support.
+        // Source: https://github.com/BerriAI/litellm/blob/main/
+        // model_prices_and_context_window.json (verified 2026-07-30).
+        let supports_xhigh = normalized.starts_with("gpt-5.1-codex-max")
+            || (normalized.starts_with("gpt-5.2") && !normalized.starts_with("gpt-5.2-chat"))
+            || (normalized.starts_with("gpt-5.4") && normalized != "gpt-5.4-2026-03-05")
+            || normalized.starts_with("gpt-5.5")
+            || normalized.starts_with("gpt-5.6");
+        return Some(if supports_xhigh {
+            ReasoningEffort::XHigh
+        } else {
+            ReasoningEffort::High
+        });
+    }
+
+    if normalized == "grok-4.5"
         || normalized.starts_with("grok-4.5-")
         || normalized.starts_with("grok-build-")
+    {
+        return Some(ReasoningEffort::High);
+    }
+
+    None
+}
+
+/// Detect Responses-compatible models that support reasoning effort.
+pub fn supports_reasoning_effort(model: &str) -> bool {
+    max_reasoning_effort(model).is_some()
 }
 
 /// Resolve the appropriate OpenAI `reasoning_effort` from an Anthropic request body.
 ///
 /// Priority:
 /// 1. Explicit `output_config.effort` — preserves the user's intent directly.
-///    `low`/`medium`/`high` map 1:1; `max` maps to `xhigh`
-///    (supported by mainstream GPT models). Unknown values are ignored.
+///    `low`/`medium`/`high`/`xhigh`/`max` are accepted. Unknown values are
+///    ignored and do not suppress the thinking fallback.
 /// 2. Fallback: `thinking.type` + `budget_tokens`:
 ///    - `adaptive` → `xhigh` (adaptive = maximum reasoning effort)
 ///    - `enabled` with budget → `low` (<4 000) / `medium` (4 000–15 999) / `high` (≥16 000)
 ///    - `enabled` without budget → `high` (conservative default)
 ///    - `disabled` / absent → `None`
-pub fn resolve_reasoning_effort(body: &Value) -> Option<&'static str> {
+///
+/// The requested effort is then clamped to the mapped target model's known
+/// maximum, so `max` becomes `xhigh` or `high` only when the upstream model
+/// does not accept the stronger value.
+pub fn resolve_reasoning_effort(body: &Value, model: &str) -> Option<&'static str> {
+    let supported_max = max_reasoning_effort(model)?;
+
     // --- Priority 1: explicit output_config.effort ---
-    if let Some(effort) = body
+    let explicit_effort = body
         .pointer("/output_config/effort")
         .and_then(|v| v.as_str())
-    {
-        return match effort {
-            "low" => Some("low"),
-            "medium" => Some("medium"),
-            "high" => Some("high"),
-            "max" => Some("xhigh"), // OpenAI xhigh = maximum reasoning effort
-            _ => None,              // unknown value — do not inject
-        };
-    }
+        .and_then(ReasoningEffort::parse);
 
-    // --- Priority 2: thinking.type + budget_tokens fallback ---
-    let thinking = body.get("thinking")?;
-    match thinking.get("type").and_then(|t| t.as_str()) {
-        Some("adaptive") => Some("xhigh"),
-        Some("enabled") => {
-            let budget = thinking.get("budget_tokens").and_then(|b| b.as_u64());
-            match budget {
-                Some(b) if b < 4_000 => Some("low"),
-                Some(b) if b < 16_000 => Some("medium"),
-                Some(_) => Some("high"),
-                None => Some("high"), // enabled but no budget — assume strong reasoning
+    let requested = if let Some(effort) = explicit_effort {
+        effort
+    } else {
+        // --- Priority 2: thinking.type + budget_tokens fallback ---
+        let thinking = body.get("thinking")?;
+        match thinking.get("type").and_then(|t| t.as_str()) {
+            Some("adaptive") => ReasoningEffort::XHigh,
+            Some("enabled") => {
+                let budget = thinking.get("budget_tokens").and_then(|b| b.as_u64());
+                match budget {
+                    Some(b) if b < 4_000 => ReasoningEffort::Low,
+                    Some(b) if b < 16_000 => ReasoningEffort::Medium,
+                    Some(_) | None => ReasoningEffort::High,
+                }
             }
+            _ => return None,
         }
-        _ => None, // disabled or missing
+    };
+
+    Some(std::cmp::min(requested, supported_max).as_str())
+}
+
+/// Extract the exact named effort field from the finalized upstream request.
+///
+/// The request body has already passed model mapping, format conversion,
+/// provider overrides, and private-field filtering when this helper is called.
+/// The returned value is therefore suitable for audit logging.
+pub fn extract_outbound_reasoning_effort(body: &Value) -> Option<String> {
+    for pointer in [
+        "/reasoning/effort",
+        "/reasoning_effort",
+        "/output_config/effort",
+    ] {
+        if let Some(effort) = body
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|effort| !effort.is_empty())
+        {
+            return Some(effort.to_string());
+        }
     }
+    None
 }
 
 /// Anthropic 请求 → OpenAI Chat Completions 请求
@@ -206,10 +304,8 @@ pub fn anthropic_to_openai_with_reasoning_content(
     }
 
     // Map Anthropic thinking → OpenAI reasoning_effort
-    if supports_reasoning_effort(model) {
-        if let Some(effort) = resolve_reasoning_effort(&body) {
-            result["reasoning_effort"] = json!(effort);
-        }
+    if let Some(effort) = resolve_reasoning_effort(&body, model) {
+        result["reasoning_effort"] = json!(effort);
     }
 
     // 转换 tools (过滤 BatchTool)
@@ -1747,7 +1843,9 @@ mod tests {
         assert!(supports_reasoning_effort("o3-mini"));
         assert!(supports_reasoning_effort("gpt-5"));
         assert!(supports_reasoning_effort("gpt-5.4"));
+        assert!(supports_reasoning_effort("gpt-5.6"));
         assert!(supports_reasoning_effort("gpt-5-codex"));
+        assert!(supports_reasoning_effort("openai/gpt-5.6-sol"));
         assert!(supports_reasoning_effort("grok-4.5"));
         assert!(supports_reasoning_effort("grok-build-0.1"));
         assert!(!supports_reasoning_effort("gpt-4o"));
@@ -1759,83 +1857,133 @@ mod tests {
     #[test]
     fn test_output_config_low_maps_to_reasoning_effort_low() {
         let body = json!({"output_config": {"effort": "low"}});
-        assert_eq!(resolve_reasoning_effort(&body), Some("low"));
+        assert_eq!(resolve_reasoning_effort(&body, "gpt-5.5"), Some("low"));
     }
 
     #[test]
     fn test_output_config_medium_maps_to_reasoning_effort_medium() {
         let body = json!({"output_config": {"effort": "medium"}});
-        assert_eq!(resolve_reasoning_effort(&body), Some("medium"));
+        assert_eq!(resolve_reasoning_effort(&body, "gpt-5.5"), Some("medium"));
     }
 
     #[test]
     fn test_output_config_high_maps_to_reasoning_effort_high() {
         let body = json!({"output_config": {"effort": "high"}});
-        assert_eq!(resolve_reasoning_effort(&body), Some("high"));
+        assert_eq!(resolve_reasoning_effort(&body, "gpt-5.5"), Some("high"));
     }
 
     #[test]
-    fn test_output_config_max_maps_to_reasoning_effort_xhigh() {
+    fn test_output_config_xhigh_is_preserved_for_xhigh_model() {
+        let body = json!({"output_config": {"effort": "xhigh"}});
+        assert_eq!(resolve_reasoning_effort(&body, "gpt-5.5"), Some("xhigh"));
+    }
+
+    #[test]
+    fn test_output_config_max_is_clamped_for_gpt_5_6() {
         let body = json!({"output_config": {"effort": "max"}});
-        assert_eq!(resolve_reasoning_effort(&body), Some("xhigh"));
+        assert_eq!(
+            resolve_reasoning_effort(&body, "openai/gpt-5.6-sol"),
+            Some("xhigh")
+        );
+    }
+
+    #[test]
+    fn test_output_config_max_is_clamped_to_xhigh() {
+        let body = json!({"output_config": {"effort": "max"}});
+        assert_eq!(resolve_reasoning_effort(&body, "gpt-5.5"), Some("xhigh"));
+    }
+
+    #[test]
+    fn test_output_config_xhigh_is_clamped_to_high_for_o_series() {
+        let body = json!({"output_config": {"effort": "xhigh"}});
+        assert_eq!(resolve_reasoning_effort(&body, "o3"), Some("high"));
+    }
+
+    #[test]
+    fn test_output_config_xhigh_is_clamped_to_high_for_gpt_5_1() {
+        let body = json!({"output_config": {"effort": "xhigh"}});
+        assert_eq!(
+            resolve_reasoning_effort(&body, "gpt-5.1-codex"),
+            Some("high")
+        );
     }
 
     #[test]
     fn test_output_config_takes_priority_over_thinking() {
-        // Even with thinking.adaptive present, explicit effort wins
         let body = json!({
             "output_config": {"effort": "low"},
             "thinking": {"type": "adaptive"}
         });
-        assert_eq!(resolve_reasoning_effort(&body), Some("low"));
+        assert_eq!(resolve_reasoning_effort(&body, "gpt-5.5"), Some("low"));
     }
 
     #[test]
-    fn test_output_config_unknown_value_no_reasoning_effort() {
-        let body = json!({"output_config": {"effort": "turbo"}});
-        assert_eq!(resolve_reasoning_effort(&body), None);
+    fn test_output_config_unknown_value_uses_thinking_fallback() {
+        let body = json!({
+            "output_config": {"effort": "turbo"},
+            "thinking": {"type": "adaptive"}
+        });
+        assert_eq!(resolve_reasoning_effort(&body, "gpt-5.5"), Some("xhigh"));
     }
 
     #[test]
     fn test_thinking_enabled_small_budget_maps_low() {
         let body = json!({"thinking": {"type": "enabled", "budget_tokens": 1024}});
-        assert_eq!(resolve_reasoning_effort(&body), Some("low"));
+        assert_eq!(resolve_reasoning_effort(&body, "gpt-5.5"), Some("low"));
     }
 
     #[test]
     fn test_thinking_enabled_medium_budget_maps_medium() {
         let body = json!({"thinking": {"type": "enabled", "budget_tokens": 8000}});
-        assert_eq!(resolve_reasoning_effort(&body), Some("medium"));
+        assert_eq!(resolve_reasoning_effort(&body, "gpt-5.5"), Some("medium"));
     }
 
     #[test]
     fn test_thinking_enabled_large_budget_maps_high() {
         let body = json!({"thinking": {"type": "enabled", "budget_tokens": 32000}});
-        assert_eq!(resolve_reasoning_effort(&body), Some("high"));
+        assert_eq!(resolve_reasoning_effort(&body, "gpt-5.5"), Some("high"));
     }
 
     #[test]
     fn test_thinking_enabled_without_budget_maps_high() {
         let body = json!({"thinking": {"type": "enabled"}});
-        assert_eq!(resolve_reasoning_effort(&body), Some("high"));
+        assert_eq!(resolve_reasoning_effort(&body, "gpt-5.5"), Some("high"));
     }
 
     #[test]
     fn test_thinking_adaptive_maps_xhigh() {
         let body = json!({"thinking": {"type": "adaptive"}});
-        assert_eq!(resolve_reasoning_effort(&body), Some("xhigh"));
+        assert_eq!(resolve_reasoning_effort(&body, "gpt-5.5"), Some("xhigh"));
     }
 
     #[test]
     fn test_thinking_disabled_no_reasoning_effort() {
         let body = json!({"thinking": {"type": "disabled"}});
-        assert_eq!(resolve_reasoning_effort(&body), None);
+        assert_eq!(resolve_reasoning_effort(&body, "gpt-5.5"), None);
     }
 
     #[test]
     fn test_no_thinking_field_no_reasoning_effort() {
         let body = json!({"messages": [{"role": "user", "content": "Hello"}]});
-        assert_eq!(resolve_reasoning_effort(&body), None);
+        assert_eq!(resolve_reasoning_effort(&body, "gpt-5.5"), None);
+    }
+
+    #[test]
+    fn test_extract_outbound_reasoning_effort_uses_final_request_shape() {
+        assert_eq!(
+            extract_outbound_reasoning_effort(&json!({
+                "reasoning": {"effort": "xhigh"},
+                "reasoning_effort": "high"
+            })),
+            Some("xhigh".to_string())
+        );
+        assert_eq!(
+            extract_outbound_reasoning_effort(&json!({
+                "output_config": {"effort": " max "}
+            })),
+            Some("max".to_string())
+        );
+        assert_eq!(extract_outbound_reasoning_effort(&json!({})), None);
     }
 
     // ── Integration: anthropic_to_openai with resolve_reasoning_effort ──
@@ -1867,9 +2015,35 @@ mod tests {
     }
 
     #[test]
-    fn test_reasoning_model_with_output_config_max() {
+    fn test_reasoning_model_with_output_config_xhigh() {
         let input = json!({
             "model": "gpt-5.4",
+            "max_tokens": 1024,
+            "output_config": {"effort": "xhigh"},
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        let result = anthropic_to_openai(input).unwrap();
+        assert_eq!(result["reasoning_effort"], "xhigh");
+    }
+
+    #[test]
+    fn test_reasoning_model_with_output_config_max_clamps_to_xhigh() {
+        let input = json!({
+            "model": "gpt-5.4",
+            "max_tokens": 1024,
+            "output_config": {"effort": "max"},
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        let result = anthropic_to_openai(input).unwrap();
+        assert_eq!(result["reasoning_effort"], "xhigh");
+    }
+
+    #[test]
+    fn test_reasoning_model_with_output_config_max_clamps_for_gpt_5_6() {
+        let input = json!({
+            "model": "gpt-5.6-sol",
             "max_tokens": 1024,
             "output_config": {"effort": "max"},
             "messages": [{"role": "user", "content": "Hello"}]

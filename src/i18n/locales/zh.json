@@ -1482,6 +1482,7 @@
     "time": "时间",
     "provider": "供应商",
     "billingModel": "计费模型",
+    "reasoningEffort": "实际发往上游的思考强度",
     "inputTokens": "输入",
     "outputTokens": "输出",
     "cacheReadTokens": "缓存命中",

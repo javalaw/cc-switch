@@ -72,6 +72,8 @@ pub struct RequestLog {
     /// 用 model/request_model 猜——路由接管下三者可能各不相同。
     /// 错误行（未计价）为空字符串。
     pub pricing_model: String,
+    /// 最终请求体中实际发往上游的命名思考强度。
+    pub reasoning_effort: Option<String>,
     pub usage: TokenUsage,
     pub cost: Option<CostBreakdown>,
     pub latency_ms: u64,
@@ -173,8 +175,8 @@ impl<'a> UsageLogger<'a> {
                 input_token_semantics,
                 input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
                 latency_ms, first_token_ms, status_code, error_message, session_id,
-                provider_type, is_streaming, cost_multiplier, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)"
+                provider_type, is_streaming, cost_multiplier, created_at, reasoning_effort
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)"
         );
         let affected_rows = conn
             .execute(
@@ -205,6 +207,7 @@ impl<'a> UsageLogger<'a> {
                     log.is_streaming as i64,
                     log.cost_multiplier,
                     created_at,
+                    log.reasoning_effort,
                 ],
             )
             .map_err(|e| AppError::Database(format!("记录请求日志失败: {e}")))?;
@@ -276,6 +279,7 @@ impl<'a> UsageLogger<'a> {
             request_model,
             // 错误行未经过计价，留空（回填的 has_usage 闸门也不会碰全 0 行）
             pricing_model: String::new(),
+            reasoning_effort: None,
             usage: TokenUsage::default(),
             cost: None,
             latency_ms,
@@ -317,6 +321,7 @@ impl<'a> UsageLogger<'a> {
             request_model,
             // 错误行未经过计价，留空（回填的 has_usage 闸门也不会碰全 0 行）
             pricing_model: String::new(),
+            reasoning_effort: None,
             usage: TokenUsage::default(),
             cost: None,
             latency_ms,
@@ -451,6 +456,7 @@ impl<'a> UsageLogger<'a> {
         model: String,
         request_model: String,
         pricing_model: String,
+        reasoning_effort: Option<String>,
         usage: TokenUsage,
         cost_multiplier: Decimal,
         latency_ms: u64,
@@ -485,6 +491,7 @@ impl<'a> UsageLogger<'a> {
             model,
             request_model,
             pricing_model,
+            reasoning_effort,
             usage,
             cost,
             latency_ms,
@@ -513,6 +520,7 @@ mod tests {
             model: "gpt-5.6".to_string(),
             request_model: "gpt-5.6".to_string(),
             pricing_model: "gpt-5.6".to_string(),
+            reasoning_effort: Some("xhigh".to_string()),
             usage: TokenUsage {
                 input_tokens,
                 output_tokens: 5,
@@ -566,6 +574,7 @@ mod tests {
             "test-model".to_string(),
             "req-model".to_string(),
             "test-model".to_string(),
+            Some("xhigh".to_string()),
             usage,
             Decimal::from(1),
             100,
@@ -578,15 +587,17 @@ mod tests {
 
         // 验证记录已插入
         let conn = crate::database::lock_conn!(db.conn);
-        let (count, request_model): (i64, String) = conn
+        let (count, request_model, reasoning_effort): (i64, String, Option<String>) = conn
             .query_row(
-                "SELECT COUNT(*), request_model FROM proxy_request_logs WHERE request_id = 'req-123'",
+                "SELECT COUNT(*), request_model, reasoning_effort
+                 FROM proxy_request_logs WHERE request_id = 'req-123'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
         assert_eq!(count, 1);
         assert_eq!(request_model, "req-model");
+        assert_eq!(reasoning_effort.as_deref(), Some("xhigh"));
         Ok(())
     }
 
@@ -727,6 +738,7 @@ mod tests {
             model: "grok-4.5".to_string(),
             request_model: "grok-4.5".to_string(),
             pricing_model: String::new(),
+            reasoning_effort: None,
             usage: TokenUsage::default(),
             cost: None,
             latency_ms: 1,

@@ -16,6 +16,8 @@ export interface RequestLog {
   requestModel?: string;
   /** 写入时实际用于计价的模型名；路由接管 + request 计价模式下可能与 model 不同 */
   pricingModel?: string;
+  /** 最终请求体中实际发往上游的思考强度 */
+  reasoningEffort?: string;
   costMultiplier: string;
   inputTokens: number;
   outputTokens: number;

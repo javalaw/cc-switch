@@ -345,10 +345,8 @@ pub fn anthropic_to_responses(
 
     // Map Anthropic thinking → OpenAI Responses reasoning.effort
     if let Some(model_name) = body.get("model").and_then(|m| m.as_str()) {
-        if super::transform::supports_reasoning_effort(model_name) {
-            if let Some(effort) = super::transform::resolve_reasoning_effort(&body) {
-                result["reasoning"] = json!({ "effort": effort });
-            }
+        if let Some(effort) = super::transform::resolve_reasoning_effort(&body, model_name) {
+            result["reasoning"] = json!({ "effort": effort });
         }
     }
 
@@ -1893,9 +1891,35 @@ mod tests {
     }
 
     #[test]
-    fn test_responses_output_config_max_sets_reasoning_xhigh() {
+    fn test_responses_output_config_xhigh_is_preserved() {
         let input = json!({
             "model": "gpt-5.4",
+            "max_tokens": 1024,
+            "output_config": {"effort": "xhigh"},
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        let result = anthropic_to_responses(input, None, false, false).unwrap();
+        assert_eq!(result["reasoning"]["effort"], "xhigh");
+    }
+
+    #[test]
+    fn test_responses_output_config_max_clamps_to_xhigh() {
+        let input = json!({
+            "model": "gpt-5.4",
+            "max_tokens": 1024,
+            "output_config": {"effort": "max"},
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        let result = anthropic_to_responses(input, None, false, false).unwrap();
+        assert_eq!(result["reasoning"]["effort"], "xhigh");
+    }
+
+    #[test]
+    fn test_responses_output_config_max_clamps_for_gpt_5_6() {
+        let input = json!({
+            "model": "openai/gpt-5.6-sol",
             "max_tokens": 1024,
             "output_config": {"effort": "max"},
             "messages": [{"role": "user", "content": "Hello"}]
