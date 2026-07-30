@@ -110,6 +110,19 @@ fn max_reasoning_effort(model: &str) -> Option<ReasoningEffort> {
         .unwrap_or_default()
         .to_ascii_lowercase();
 
+    // OpenAI documents `max` for the whole currently published GPT-5.6
+    // family. Keep this list exact: `gpt-5.6` is the Sol alias, while Sol,
+    // Terra, and Luna are the only published GPT-5.6 model ids today. The
+    // standard/pro execution mode is independent of reasoning effort.
+    // Source: https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.6
+    // (verified 2026-07-30).
+    if matches!(
+        normalized.as_str(),
+        "gpt-5.6" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna"
+    ) {
+        return Some(ReasoningEffort::Max);
+    }
+
     if is_openai_o_series(&normalized) {
         return Some(ReasoningEffort::High);
     }
@@ -120,16 +133,15 @@ fn max_reasoning_effort(model: &str) -> Option<ReasoningEffort> {
         .and_then(|major| major.parse::<u32>().ok())
         .is_some_and(|major| major >= 5);
     if is_gpt_5_or_newer {
-        // LiteLLM's public capability map identifies xhigh support for these
-        // OpenAI families. GPT-5/5.1 and current GPT-5.3 chat/codex models top
-        // out at high. No OpenAI model currently declares max support.
+        // For pre-5.6 models, LiteLLM's public capability map identifies xhigh
+        // support for these OpenAI families. GPT-5/5.1 and current GPT-5.3
+        // chat/codex models top out at high.
         // Source: https://github.com/BerriAI/litellm/blob/main/
         // model_prices_and_context_window.json (verified 2026-07-30).
         let supports_xhigh = normalized.starts_with("gpt-5.1-codex-max")
             || (normalized.starts_with("gpt-5.2") && !normalized.starts_with("gpt-5.2-chat"))
             || (normalized.starts_with("gpt-5.4") && normalized != "gpt-5.4-2026-03-05")
-            || normalized.starts_with("gpt-5.5")
-            || normalized.starts_with("gpt-5.6");
+            || normalized.starts_with("gpt-5.5");
         return Some(if supports_xhigh {
             ReasoningEffort::XHigh
         } else {
@@ -1879,12 +1891,34 @@ mod tests {
     }
 
     #[test]
-    fn test_output_config_max_is_clamped_for_gpt_5_6() {
+    fn test_output_config_max_is_preserved_for_published_gpt_5_6_models() {
         let body = json!({"output_config": {"effort": "max"}});
-        assert_eq!(
-            resolve_reasoning_effort(&body, "openai/gpt-5.6-sol"),
-            Some("xhigh")
-        );
+        for model in [
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "openai/gpt-5.6-sol",
+            "openrouter/openai/gpt-5.6-terra",
+        ] {
+            assert_eq!(
+                resolve_reasoning_effort(&body, model),
+                Some("max"),
+                "max should be preserved for {model}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_output_config_max_is_not_assumed_for_unknown_gpt_5_6_suffixes() {
+        let body = json!({"output_config": {"effort": "max"}});
+        for model in ["gpt-5.60-sol", "gpt-5.6-pro", "gpt-5.6-codex"] {
+            assert_eq!(
+                resolve_reasoning_effort(&body, model),
+                Some("high"),
+                "unpublished model id {model} must not inherit GPT-5.6 max support"
+            );
+        }
     }
 
     #[test]
@@ -2058,7 +2092,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reasoning_model_with_output_config_max_clamps_for_gpt_5_6() {
+    fn test_reasoning_model_with_output_config_max_for_gpt_5_6() {
         let input = json!({
             "model": "gpt-5.6-sol",
             "max_tokens": 1024,
@@ -2067,7 +2101,7 @@ mod tests {
         });
 
         let result = anthropic_to_openai(input).unwrap();
-        assert_eq!(result["reasoning_effort"], "xhigh");
+        assert_eq!(result["reasoning_effort"], "max");
     }
 
     #[test]

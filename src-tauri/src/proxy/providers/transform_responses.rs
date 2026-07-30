@@ -1917,7 +1917,7 @@ mod tests {
     }
 
     #[test]
-    fn test_responses_output_config_max_clamps_for_gpt_5_6() {
+    fn test_responses_output_config_max_for_gpt_5_6() {
         let input = json!({
             "model": "openai/gpt-5.6-sol",
             "max_tokens": 1024,
@@ -1926,7 +1926,7 @@ mod tests {
         });
 
         let result = anthropic_to_responses(input, None, false, false).unwrap();
-        assert_eq!(result["reasoning"]["effort"], "xhigh");
+        assert_eq!(result["reasoning"]["effort"], "max");
     }
 
     #[test]
