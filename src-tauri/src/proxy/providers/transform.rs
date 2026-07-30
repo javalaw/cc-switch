@@ -114,7 +114,8 @@ fn max_reasoning_effort(model: &str) -> Option<ReasoningEffort> {
     // family. Keep this list exact: `gpt-5.6` is the Sol alias, while Sol,
     // Terra, and Luna are the only published GPT-5.6 model ids today. The
     // standard/pro execution mode is independent of reasoning effort.
-    // Source: https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.6
+    // Sources: https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.6
+    // and https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json
     // (verified 2026-07-30).
     if matches!(
         normalized.as_str(),
@@ -133,15 +134,21 @@ fn max_reasoning_effort(model: &str) -> Option<ReasoningEffort> {
         .and_then(|major| major.parse::<u32>().ok())
         .is_some_and(|major| major >= 5);
     if is_gpt_5_or_newer {
-        // For pre-5.6 models, LiteLLM's public capability map identifies xhigh
-        // support for these OpenAI families. GPT-5/5.1 and current GPT-5.3
-        // chat/codex models top out at high.
-        // Source: https://github.com/BerriAI/litellm/blob/main/
+        // OpenAI's model pages list xhigh for GPT-5.2, GPT-5.3-Codex,
+        // GPT-5.4, and GPT-5.5. GPT-5/5.1 top out at high, except for the
+        // GPT-5.1-Codex-Max capability recorded in LiteLLM's public map.
+        // Sources: https://developers.openai.com/api/docs/models and
+        // https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json;
+        // GPT-5.1-Codex-Max fallback: https://github.com/BerriAI/litellm/blob/main/
         // model_prices_and_context_window.json (verified 2026-07-30).
         let supports_xhigh = normalized.starts_with("gpt-5.1-codex-max")
-            || (normalized.starts_with("gpt-5.2") && !normalized.starts_with("gpt-5.2-chat"))
-            || (normalized.starts_with("gpt-5.4") && normalized != "gpt-5.4-2026-03-05")
-            || normalized.starts_with("gpt-5.5");
+            || ((normalized == "gpt-5.2" || normalized.starts_with("gpt-5.2-"))
+                && !normalized.starts_with("gpt-5.2-chat"))
+            || normalized == "gpt-5.3-codex"
+            || normalized == "gpt-5.4"
+            || normalized.starts_with("gpt-5.4-")
+            || normalized == "gpt-5.5"
+            || normalized.starts_with("gpt-5.5-");
         return Some(if supports_xhigh {
             ReasoningEffort::XHigh
         } else {
@@ -1922,9 +1929,29 @@ mod tests {
     }
 
     #[test]
-    fn test_output_config_max_is_clamped_to_xhigh() {
+    fn test_pre_gpt_5_6_models_do_not_inherit_max_support() {
         let body = json!({"output_config": {"effort": "max"}});
-        assert_eq!(resolve_reasoning_effort(&body, "gpt-5.5"), Some("xhigh"));
+        for (model, expected) in [
+            ("gpt-5", "high"),
+            ("gpt-5-mini", "high"),
+            ("gpt-5.1", "high"),
+            ("gpt-5.1-codex-max", "xhigh"),
+            ("gpt-5.2", "xhigh"),
+            ("gpt-5.2-codex", "xhigh"),
+            ("gpt-5.2-pro", "xhigh"),
+            ("gpt-5.3-codex", "xhigh"),
+            ("gpt-5.4", "xhigh"),
+            ("gpt-5.4-mini", "xhigh"),
+            ("gpt-5.4-pro", "xhigh"),
+            ("gpt-5.5", "xhigh"),
+            ("gpt-5.5-pro", "xhigh"),
+        ] {
+            assert_eq!(
+                resolve_reasoning_effort(&body, model),
+                Some(expected),
+                "{model} must clamp max to its documented ceiling"
+            );
+        }
     }
 
     #[test]
@@ -1943,12 +1970,14 @@ mod tests {
     }
 
     #[test]
-    fn test_xhigh_capability_exceptions_follow_public_snapshot() {
+    fn test_xhigh_capabilities_follow_published_model_pages() {
         let body = json!({"output_config": {"effort": "xhigh"}});
         for (model, expected) in [
             ("gpt-5.2", "xhigh"),
             ("gpt-5.2-chat-latest", "high"),
-            ("gpt-5.4-2026-03-05", "high"),
+            ("gpt-5.3-codex", "xhigh"),
+            ("gpt-5.3-chat-latest", "high"),
+            ("gpt-5.4-2026-03-05", "xhigh"),
             ("gpt-5.4-mini", "xhigh"),
         ] {
             assert_eq!(
