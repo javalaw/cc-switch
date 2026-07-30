@@ -1909,6 +1909,23 @@ mod tests {
     }
 
     #[test]
+    fn test_xhigh_capability_exceptions_follow_public_snapshot() {
+        let body = json!({"output_config": {"effort": "xhigh"}});
+        for (model, expected) in [
+            ("gpt-5.2", "xhigh"),
+            ("gpt-5.2-chat-latest", "high"),
+            ("gpt-5.4-2026-03-05", "high"),
+            ("gpt-5.4-mini", "xhigh"),
+        ] {
+            assert_eq!(
+                resolve_reasoning_effort(&body, model),
+                Some(expected),
+                "unexpected maximum effort for {model}"
+            );
+        }
+    }
+
+    #[test]
     fn test_output_config_takes_priority_over_thinking() {
         let body = json!({
             "output_config": {"effort": "low"},
