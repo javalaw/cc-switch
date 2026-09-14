@@ -156,6 +156,11 @@ fn max_reasoning_effort(model: &str) -> Option<ReasoningEffort> {
         });
     }
 
+    // Preserve upstream's Grok 4.6 xhigh mapping (#7318).
+    if normalized == "grok-4.6" || normalized.starts_with("grok-4.6-") {
+        return Some(ReasoningEffort::XHigh);
+    }
+
     if normalized == "grok-4.5"
         || normalized.starts_with("grok-4.5-")
         || normalized.starts_with("grok-build-")
@@ -337,14 +342,18 @@ pub fn anthropic_to_openai_with_reasoning_content(
             .iter()
             .filter(|t| t.get("type").and_then(|v| v.as_str()) != Some("BatchTool"))
             .map(|t| {
-                json!({
-                    "type": "function",
-                    "function": {
-                        "name": t.get("name").and_then(|n| n.as_str()).unwrap_or(""),
-                        "description": t.get("description"),
-                        "parameters": clean_schema(t.get("input_schema").cloned().unwrap_or(json!({})))
-                    }
-                })
+                let mut function = json!({
+                    "name": t.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+                });
+                // 缺失的 description 省略而非输出 null：hosted 工具（web_search 等）
+                // 与未填描述的自定义/MCP 工具都不带该字段，严格上游收到 null 会
+                // 拒绝整个请求（400 "expected string, received null"）。
+                if let Some(description) = t.get("description").filter(|d| !d.is_null()) {
+                    function["description"] = description.clone();
+                }
+                function["parameters"] =
+                    clean_schema(t.get("input_schema").cloned().unwrap_or(json!({})));
+                json!({"type": "function", "function": function})
             })
             .collect();
 
@@ -1177,6 +1186,35 @@ mod tests {
     }
 
     #[test]
+    fn test_anthropic_to_openai_omits_missing_tool_description() {
+        let input = json!({
+            "model": "claude-opus-5",
+            "max_tokens": 50,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {"name": "Bash", "description": "Run a bash command",
+                 "input_schema": {"type": "object"}},
+                {"name": "NoDesc",
+                 "input_schema": {"type": "object"}},
+                {"type": "web_search_20250305", "name": "web_search", "max_uses": 8}
+            ]
+        });
+
+        let result = anthropic_to_openai_with_reasoning_content(input, false).unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 3);
+        // 带 description 的工具原样保留
+        assert_eq!(
+            tools[0]["function"]["description"],
+            json!("Run a bash command")
+        );
+        // 缺 description 的自定义工具与 hosted 工具：省略字段，而不是序列化成 null
+        assert!(tools[1]["function"].get("description").is_none());
+        assert!(tools[2]["function"].get("description").is_none());
+        assert!(tools[1]["function"].get("parameters").is_some());
+    }
+
+    #[test]
     fn test_anthropic_to_openai_tool_use_uses_redacted_thinking_placeholder() {
         let input = json!({
             "model": "mimo-v2.5-pro",
@@ -1853,9 +1891,12 @@ mod tests {
         assert!(supports_reasoning_effort("gpt-5-codex"));
         assert!(supports_reasoning_effort("openai/gpt-5.6-sol"));
         assert!(supports_reasoning_effort("grok-4.5"));
+        assert!(supports_reasoning_effort("grok-4.6"));
+        assert!(supports_reasoning_effort("grok-4.6-build"));
         assert!(supports_reasoning_effort("grok-build-0.1"));
         assert!(!supports_reasoning_effort("gpt-4o"));
         assert!(!supports_reasoning_effort("claude-sonnet-4-6"));
+        assert!(!supports_reasoning_effort("grok-4"));
     }
 
     // ── resolve_reasoning_effort unit tests ──
