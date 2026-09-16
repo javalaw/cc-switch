@@ -112,14 +112,15 @@ fn max_reasoning_effort(model: &str) -> Option<ReasoningEffort> {
 
     // OpenAI documents `max` for the whole currently published GPT-5.6
     // family. Keep this list exact: `gpt-5.6` is the Sol alias, while Sol,
-    // Terra, and Luna are the only published GPT-5.6 model ids today. The
-    // standard/pro execution mode is independent of reasoning effort.
-    // Sources: https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.6
+    // Terra, and Luna are the published GPT-5.6 model ids. GPT-6 Astra uses
+    // the same effort mapping. The standard/pro execution mode is independent
+    // of reasoning effort.
+    // GPT-5.6 sources: https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.6
     // and https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json
     // (verified 2026-07-30).
     if matches!(
         normalized.as_str(),
-        "gpt-5.6" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna"
+        "gpt-5.6" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" | "gpt-6-astra"
     ) {
         return Some(ReasoningEffort::Max);
     }
@@ -1945,13 +1946,19 @@ mod tests {
     }
 
     #[test]
-    fn test_output_config_max_is_not_assumed_for_unknown_gpt_5_6_suffixes() {
+    fn test_output_config_max_is_not_assumed_for_unknown_gpt_models() {
         let body = json!({"output_config": {"effort": "max"}});
-        for model in ["gpt-5.60-sol", "gpt-5.6-pro", "gpt-5.6-codex"] {
+        for model in [
+            "gpt-5.60-sol",
+            "gpt-5.6-pro",
+            "gpt-5.6-codex",
+            "gpt-6",
+            "gpt-6-astra-pro",
+        ] {
             assert_eq!(
                 resolve_reasoning_effort(&body, model),
                 Some("high"),
-                "unpublished model id {model} must not inherit GPT-5.6 max support"
+                "unknown model id {model} must not inherit max support"
             );
         }
     }
@@ -2149,16 +2156,18 @@ mod tests {
     }
 
     #[test]
-    fn test_reasoning_model_with_output_config_max_for_gpt_5_6() {
-        let input = json!({
-            "model": "gpt-5.6-sol",
-            "max_tokens": 1024,
-            "output_config": {"effort": "max"},
-            "messages": [{"role": "user", "content": "Hello"}]
-        });
+    fn test_reasoning_model_with_output_config_max_for_gpt_5_6_and_astra() {
+        for model in ["gpt-5.6-sol", "gpt-6-astra", "openai/gpt-6-astra"] {
+            let input = json!({
+                "model": model,
+                "max_tokens": 1024,
+                "output_config": {"effort": "max"},
+                "messages": [{"role": "user", "content": "Hello"}]
+            });
 
-        let result = anthropic_to_openai(input).unwrap();
-        assert_eq!(result["reasoning_effort"], "max");
+            let result = anthropic_to_openai(input).unwrap();
+            assert_eq!(result["reasoning_effort"], "max", "model={model}");
+        }
     }
 
     #[test]

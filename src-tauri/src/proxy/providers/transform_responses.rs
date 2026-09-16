@@ -4888,6 +4888,35 @@ mod tests {
     }
 
     #[test]
+    fn test_responses_gpt_6_astra_preserves_explicit_reasoning_effort() {
+        for model in [
+            "gpt-6-astra",
+            "openai/gpt-6-astra",
+            "openrouter/openai/gpt-6-astra",
+        ] {
+            for effort in ["low", "medium", "high", "xhigh", "max"] {
+                for is_codex_oauth in [false, true] {
+                    let input = json!({
+                        "model": model,
+                        "max_tokens": 1024,
+                        "output_config": {"effort": effort},
+                        "thinking": {"type": "adaptive"},
+                        "messages": [{"role": "user", "content": "Hello"}]
+                    });
+
+                    let result =
+                        anthropic_to_responses(input, None, is_codex_oauth, false).unwrap();
+                    assert_eq!(result["model"], model);
+                    assert_eq!(
+                        result["reasoning"]["effort"], effort,
+                        "model={model}, effort={effort}, codex_oauth={is_codex_oauth}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_responses_grok_4_6_reasoning_effort_not_dropped() {
         // After model mapping, the Responses gate runs on the mapped name;
         // grok-4.6 / grok-4.6-* were missing from the whitelist (#7314).
@@ -4957,15 +4986,17 @@ mod tests {
 
     #[test]
     fn test_responses_thinking_adaptive_sets_reasoning_xhigh() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "max_tokens": 1024,
-            "thinking": {"type": "adaptive"},
-            "messages": [{"role": "user", "content": "Hello"}]
-        });
+        for model in ["gpt-5.4", "gpt-5.6-sol", "gpt-6-astra"] {
+            let input = json!({
+                "model": model,
+                "max_tokens": 1024,
+                "thinking": {"type": "adaptive"},
+                "messages": [{"role": "user", "content": "Hello"}]
+            });
 
-        let result = anthropic_to_responses(input, None, false, false).unwrap();
-        assert_eq!(result["reasoning"]["effort"], "xhigh");
+            let result = anthropic_to_responses(input, None, false, false).unwrap();
+            assert_eq!(result["reasoning"]["effort"], "xhigh", "model={model}");
+        }
     }
 
     #[test]
