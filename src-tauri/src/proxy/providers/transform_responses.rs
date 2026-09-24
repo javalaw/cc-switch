@@ -4875,16 +4875,25 @@ mod tests {
     }
 
     #[test]
-    fn test_responses_output_config_max_for_gpt_5_6() {
-        let input = json!({
-            "model": "openai/gpt-5.6-sol",
-            "max_tokens": 1024,
-            "output_config": {"effort": "max"},
-            "messages": [{"role": "user", "content": "Hello"}]
-        });
+    fn test_responses_max_capable_models_preserve_max() {
+        for model in [
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-6-astra",
+            "openai/gpt-5.6-sol",
+        ] {
+            let input = json!({
+                "model": model,
+                "max_tokens": 1024,
+                "output_config": {"effort": "max"},
+                "messages": [{"role": "user", "content": "Hello"}]
+            });
 
-        let result = anthropic_to_responses(input, None, false, false).unwrap();
-        assert_eq!(result["reasoning"]["effort"], "max");
+            let result = anthropic_to_responses(input, None, false, false).unwrap();
+            assert_eq!(result["reasoning"]["effort"], "max", "model {model}");
+        }
     }
 
     #[test]
@@ -4917,18 +4926,25 @@ mod tests {
     }
 
     #[test]
-    fn test_responses_grok_4_6_reasoning_effort_not_dropped() {
-        // After model mapping, the Responses gate runs on the mapped name;
-        // grok-4.6 / grok-4.6-* were missing from the whitelist (#7314).
-        let input = json!({
-            "model": "grok-4.6-build",
-            "max_tokens": 1024,
-            "output_config": {"effort": "xhigh"},
-            "messages": [{"role": "user", "content": "Hello"}]
-        });
+    fn test_responses_grok_4_6_and_newer_reasoning_effort_not_dropped() {
+        for model in [
+            "grok-4.6-build",
+            "grok-4.7",
+            "grok-4.7-build",
+            "grok-4.10",
+            "GROK-4.10-BUILD",
+            "xai/grok-4.10",
+        ] {
+            let input = json!({
+                "model": model,
+                "max_tokens": 1024,
+                "output_config": {"effort": "xhigh"},
+                "messages": [{"role": "user", "content": "Hello"}]
+            });
 
-        let result = anthropic_to_responses(input, None, false, false).unwrap();
-        assert_eq!(result["reasoning"]["effort"], "xhigh");
+            let result = anthropic_to_responses(input, None, false, false).unwrap();
+            assert_eq!(result["reasoning"]["effort"], "xhigh", "model {model}");
+        }
     }
 
     #[test]

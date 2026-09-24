@@ -157,15 +157,22 @@ fn max_reasoning_effort(model: &str) -> Option<ReasoningEffort> {
         });
     }
 
-    // Preserve upstream's Grok 4.6 xhigh mapping (#7318).
-    if normalized == "grok-4.6" || normalized.starts_with("grok-4.6-") {
-        return Some(ReasoningEffort::XHigh);
+    // Accept the whole Grok 4.5+ family, including multi-digit minor versions.
+    // Preserve the existing 4.5 ceiling and the upstream 4.6+ xhigh mapping.
+    if let Some(minor) = normalized
+        .strip_prefix("grok-4.")
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|minor| minor.parse::<u32>().ok())
+        .filter(|minor| *minor >= 5)
+    {
+        return Some(if minor == 5 {
+            ReasoningEffort::High
+        } else {
+            ReasoningEffort::XHigh
+        });
     }
 
-    if normalized == "grok-4.5"
-        || normalized.starts_with("grok-4.5-")
-        || normalized.starts_with("grok-build-")
-    {
+    if normalized.starts_with("grok-build-") {
         return Some(ReasoningEffort::High);
     }
 
@@ -1895,6 +1902,16 @@ mod tests {
         assert!(supports_reasoning_effort("grok-4.6"));
         assert!(supports_reasoning_effort("grok-4.6-build"));
         assert!(supports_reasoning_effort("grok-build-0.1"));
+        // The rule covers the whole grok-4.x (x >= 5) family, so future
+        // releases need no whitelist update.
+        assert!(supports_reasoning_effort("grok-4.7"));
+        assert!(supports_reasoning_effort("grok-4.7-build"));
+        assert!(supports_reasoning_effort("grok-4.10"));
+        assert!(supports_reasoning_effort("grok-4.10-build"));
+        assert!(supports_reasoning_effort("GROK-4.10-BUILD"));
+        assert!(!supports_reasoning_effort("grok-4."));
+        assert!(!supports_reasoning_effort("grok-4.build"));
+        assert!(!supports_reasoning_effort("grok-4.4"));
         assert!(!supports_reasoning_effort("gpt-4o"));
         assert!(!supports_reasoning_effort("claude-sonnet-4-6"));
         assert!(!supports_reasoning_effort("grok-4"));
@@ -1927,13 +1944,14 @@ mod tests {
     }
 
     #[test]
-    fn test_output_config_max_is_preserved_for_published_gpt_5_6_models() {
+    fn test_output_config_max_preserved_for_supported_models() {
         let body = json!({"output_config": {"effort": "max"}});
         for model in [
             "gpt-5.6",
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-5.6-luna",
+            "gpt-6-astra",
             "openai/gpt-5.6-sol",
             "openrouter/openai/gpt-5.6-terra",
         ] {
@@ -2167,6 +2185,33 @@ mod tests {
 
             let result = anthropic_to_openai(input).unwrap();
             assert_eq!(result["reasoning_effort"], "max", "model={model}");
+        }
+    }
+
+    #[test]
+    fn test_grok_family_reasoning_effort_respects_model_ceiling() {
+        for (model, expected) in [
+            ("grok-4.5", "high"),
+            ("grok-4.5-build", "high"),
+            ("grok-build-0.1", "high"),
+            ("grok-4.6", "xhigh"),
+            ("grok-4.7-build", "xhigh"),
+            ("GROK-4.10-BUILD", "xhigh"),
+            ("xai/grok-4.10", "xhigh"),
+        ] {
+            for effort in ["xhigh", "max"] {
+                let input = json!({
+                    "model": model,
+                    "output_config": {"effort": effort},
+                    "messages": [{"role": "user", "content": "Hello"}]
+                });
+
+                let result = anthropic_to_openai(input).unwrap();
+                assert_eq!(
+                    result["reasoning_effort"], expected,
+                    "model={model}, effort={effort}"
+                );
+            }
         }
     }
 
