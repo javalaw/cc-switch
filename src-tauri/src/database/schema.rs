@@ -68,7 +68,8 @@ impl Database {
             enabled_gemini BOOLEAN NOT NULL DEFAULT 0, enabled_grokbuild BOOLEAN NOT NULL DEFAULT 0,
             enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
             enabled_mcode BOOLEAN NOT NULL DEFAULT 0,
-            enabled_hermes BOOLEAN NOT NULL DEFAULT 0
+            enabled_hermes BOOLEAN NOT NULL DEFAULT 0,
+            enabled_pi BOOLEAN NOT NULL DEFAULT 0
         )",
             [],
         )
@@ -543,9 +544,7 @@ impl Database {
                         Self::set_user_version(conn, 16)?;
                     }
                     16 => {
-                        log::info!(
-                            "迁移数据库从 v16 到 v17（记录 reasoning effort 并添加会话用量持久去重账本）"
-                        );
+                        log::info!("迁移数据库从 v16 到 v17（添加会话用量持久去重账本）");
                         Self::migrate_v16_to_v17(conn)?;
                         Self::set_user_version(conn, 17)?;
                     }
@@ -566,6 +565,23 @@ impl Database {
                             }
                         }
                         Self::set_user_version(conn, 19)?;
+                    }
+                    19 => {
+                        log::info!("迁移数据库从 v19 到 v20（MCP 添加 Pi 支持）");
+                        if Self::table_exists(conn, "mcp_servers")? {
+                            Self::add_column_if_missing(
+                                conn,
+                                "mcp_servers",
+                                "enabled_pi",
+                                "BOOLEAN NOT NULL DEFAULT 0",
+                            )?;
+                        }
+                        Self::set_user_version(conn, 20)?;
+                    }
+                    20 => {
+                        log::info!("迁移数据库从 v20 到 v21（兼容 fork 的 reasoning effort 记录）");
+                        Self::migrate_v20_to_v21(conn)?;
+                        Self::set_user_version(conn, 21)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1580,11 +1596,8 @@ impl Database {
         crate::services::session_usage_codex::reset_codex_usage_on_conn(conn, &codex_dir)
     }
 
-    /// v16 -> v17: record reasoning effort and preserve session request identities after rollup.
+    /// v16 -> v17: preserve session request identities after detail rollup.
     fn migrate_v16_to_v17(conn: &Connection) -> Result<(), AppError> {
-        if Self::table_exists(conn, "proxy_request_logs")? {
-            Self::add_column_if_missing(conn, "proxy_request_logs", "reasoning_effort", "TEXT")?;
-        }
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS session_usage_dedup (
                 data_source TEXT NOT NULL,
@@ -1619,6 +1632,16 @@ impl Database {
             )?;
         }
         Ok(())
+    }
+
+    /// v20 -> v21: reconcile the fork's reasoning column with upstream schemas.
+    /// Both histories used v17 for different migrations, so already-upgraded
+    /// databases must receive the missing column and dedup ledger here.
+    fn migrate_v20_to_v21(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "proxy_request_logs")? {
+            Self::add_column_if_missing(conn, "proxy_request_logs", "reasoning_effort", "TEXT")?;
+        }
+        Self::migrate_v16_to_v17(conn)
     }
 
     /// 插入默认模型定价数据
@@ -1674,6 +1697,26 @@ impl Database {
                 "25",
                 "0.50",
                 "6.25",
+            ),
+            // Claude Sonnet 5.5（2026-09-28 发布；同 Sonnet 5 价，但缓存读为
+            // 0.05x = $0.10，非 Sonnet 5 的 $0.20）
+            (
+                "claude-sonnet-5-5",
+                "Claude Sonnet 5.5",
+                "2",
+                "10",
+                "0.10",
+                "2.50",
+            ),
+            // Claude Haiku 5.5（2026-10-07 发布；按提示词长度分档，表内只存
+            // 10 万 token 以内的标准档，超过时 $0.50/$2.50 的高档不入表）
+            (
+                "claude-haiku-5-5",
+                "Claude Haiku 5.5",
+                "0.10",
+                "0.50",
+                "0.01",
+                "0.125",
             ),
             // Claude Sonnet 5（官方定价页 2026-09 确认：$2/$10 介绍价转为正式价，
             // 原定 09-01 涨至 $3/$15 取消）
@@ -1801,6 +1844,9 @@ impl Database {
             // effort 档 low/medium/high/xhigh 由查价剥后缀回落到本行；max 不在剥离列表
             //（会与 *-max 真 id 撞名），不另加后缀行。
             ("gpt-6-astra", "GPT-6 Astra", "10", "50", "1", "12.5"),
+            // GPT-6.1 Sol: Standard short-context pricing; cached input is 0.05× input.
+            // https://developers.openai.com/api/docs/models/gpt-6.1-sol
+            ("gpt-6.1-sol", "GPT-6.1 Sol", "2", "10", "0.10", "2.50"),
             ("gpt-6-sol", "GPT-6 Sol", "2", "10", "0.20", "2.50"),
             ("gpt-6-luna", "GPT-6 Luna", "0.10", "0.50", "0.01", "0.125"),
             // GPT-5.6 系列（Sol / Terra / Luna，2026-06 发布）
@@ -3785,6 +3831,31 @@ mod tests {
     }
 
     #[test]
+    fn migrate_v19_to_v20_adds_pi_mcp_flag_and_keeps_existing_flags() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE mcp_servers (
+                id TEXT PRIMARY KEY,
+                enabled_codex BOOLEAN NOT NULL DEFAULT 0,
+                enabled_mcode BOOLEAN NOT NULL DEFAULT 0
+            );
+            INSERT INTO mcp_servers (id, enabled_codex, enabled_mcode) VALUES ('mcp-1', 1, 1);",
+        )?;
+        Database::set_user_version(&conn, 19)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+        let values: (i64, i64, i64) = conn.query_row(
+            "SELECT enabled_codex, enabled_mcode, enabled_pi FROM mcp_servers WHERE id = 'mcp-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(values, (1, 1, 0));
+        Ok(())
+    }
+
+    #[test]
     fn migrate_v14_to_v15_adds_grokbuild_skill_and_mcp_flags() -> Result<(), AppError> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(
@@ -3874,7 +3945,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_v16_to_v17_adds_reasoning_effort_and_dedup_ledger() -> Result<(), AppError> {
+    fn migrate_from_v16_adds_reasoning_effort_and_dedup_ledger() -> Result<(), AppError> {
         let conn = Connection::open_in_memory()?;
         conn.execute(
             "CREATE TABLE proxy_request_logs (request_id TEXT PRIMARY KEY)",
@@ -3897,6 +3968,56 @@ mod tests {
              VALUES ('pi_session', 'request', 'semantic', 1)",
             [],
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn migration_reconciles_fork_v17_and_upstream_v20_without_losing_data() -> Result<(), AppError>
+    {
+        for (version, fork_schema) in [(17, true), (20, false)] {
+            let conn = Connection::open_in_memory()?;
+            conn.execute(
+                "CREATE TABLE proxy_request_logs (request_id TEXT PRIMARY KEY)",
+                [],
+            )?;
+            if fork_schema {
+                conn.execute_batch(
+                    "ALTER TABLE proxy_request_logs ADD COLUMN reasoning_effort TEXT;
+                     INSERT INTO proxy_request_logs VALUES ('existing-request', 'max');",
+                )?;
+            } else {
+                conn.execute(
+                    "INSERT INTO proxy_request_logs VALUES ('existing-request')",
+                    [],
+                )?;
+                Database::migrate_v16_to_v17(&conn)?;
+                conn.execute(
+                    "INSERT INTO session_usage_dedup VALUES ('pi_session', 'existing', 'semantic', 1)",
+                    [],
+                )?;
+            }
+            Database::set_user_version(&conn, version)?;
+
+            Database::apply_schema_migrations_on_conn(&conn)?;
+            Database::apply_schema_migrations_on_conn(&conn)?;
+
+            assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+            let effort: Option<String> = conn.query_row(
+                "SELECT reasoning_effort FROM proxy_request_logs WHERE request_id = 'existing-request'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(effort.as_deref(), fork_schema.then_some("max"));
+            let dedup_count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM session_usage_dedup", [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(dedup_count, if fork_schema { 0 } else { 1 });
+            conn.execute(
+                "INSERT INTO session_usage_dedup VALUES ('pi_session', 'new', 'new-semantic', 1)",
+                [],
+            )?;
+        }
         Ok(())
     }
 
